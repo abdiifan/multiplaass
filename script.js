@@ -2939,14 +2939,20 @@ function loadIncomingFile(file) {
           return r;
         });
 
-        // Filter: HO01 plant only, ZME/ZMS/ZLC only
+        // Filter: HO01 plant only, ZME/ZMS/ZLC only,
+        // and Movement Type Text must be "GR goods receipt" —
+        // "GR stock in transit" rows are excluded from shelf life lookup.
         const ALLOWED_VT = ["ZME","ZMS","ZLC"];
         let rows = trimmed.filter(r => {
           const plant = String(r["Plant"] || "").trim().toUpperCase();
           if (plant !== "HO01") return false;
           // Extract suffix from Valuation Type (e.g. "51490_ZME" → "ZME")
           const vt = _islExtractVT(r);
-          return ALLOWED_VT.includes(vt);
+          if (!ALLOWED_VT.includes(vt)) return false;
+          // Only include actual goods receipts — exclude stock-in-transit GR postings
+          const mvtText = String(r["Movement Type Text"] || "").trim().toUpperCase();
+          if (mvtText === "GR STOCK IN TRANSIT") return false;
+          return true;
         });
 
         // Parse fields from received goods file.
