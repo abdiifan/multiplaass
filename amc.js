@@ -152,7 +152,7 @@ function buildAmcMerged() {
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 function amcFmtVal(v) {
   if (v === null || v === undefined) return '<span style="color:var(--muted);font-size:0.8em">N/A</span>';
-  return fmtETB(v);
+  return fmtQty(v);
 }
 
 function amcStockedCount(row) {
@@ -241,7 +241,7 @@ async function renderAmcDistribution() {
     amcKpiCard("Total Items", totalItems.toLocaleString(), `${typeVal || "All Types"}`, "blue"),
     amcKpiCard("Stocked in All Plants", stockedInAll.toLocaleString(), `${amcPlants.length} plants`, "green"),
     amcKpiCard("N/A in All Plants", naAll.toLocaleString(), "No coverage anywhere", "red"),
-    amcKpiCard("Total AMC Value", fmtETB(totalAMCVal), "Across all plants", "purple"),
+    amcKpiCard("Total AMC Value", fmtQty(totalAMCVal), "Across all plants", "purple"),
   ]);
 
   // Chart: items stocked per plant (bar chart of coverage)
@@ -271,12 +271,12 @@ async function renderAmcDistribution() {
       yaxis:"y",
     },
     {
-      type:"scatter", mode:"lines+markers", name:"Total AMC Value (ETB)",
+      type:"scatter", mode:"lines+markers", name:"Total AMC Value (Qty)",
       x: plantCoverage.map(p => p.plant),
       y: plantCoverage.map(p => p.totalAMC),
       line: { color:"#ffa657", width:2 },
       marker: { size:6 },
-      hovertemplate: "<b>%{x}</b><br>AMC: ETB %{y:,.0f}<extra></extra>",
+      hovertemplate: "<b>%{x}</b><br>AMC: %{y:,.0f} units<extra></extra>",
       yaxis:"y2",
     }
   ], {
@@ -285,7 +285,7 @@ async function renderAmcDistribution() {
     barmode:"group",
     xaxis: { title:"Plant", tickfont:{size:10} },
     yaxis: { title:"Items Stocked", side:"left" },
-    yaxis2:{ title:"AMC Value (ETB)", overlaying:"y", side:"right", showgrid:false },
+    yaxis2:{ title:"AMC Value (Qty)", overlaying:"y", side:"right", showgrid:false },
     legend:{ orientation:"h", y:-0.2 },
     margin:{ l:60, r:60, t:30, b:60 },
   }, PLOTLY_CONFIG);
@@ -302,10 +302,10 @@ async function renderAmcDistribution() {
     { key:"_stocked", label:"Plants Stocked",
       fmt:(v) => `<span style="font-weight:600;color:${v===amcPlants.length?'var(--green)':v===0?'var(--red)':'var(--text)'}">${v} / ${amcPlants.length}</span>`,
       raw:true },
-    { key:"_total", label:"Total AMC (ETB)", fmt:fmtETB },
+    { key:"_total", label:"Total AMC (Qty)", fmt:fmtQty },
     ...amcPlants.map(p => ({
       key:`_p_${p}`, label:p,
-      fmt:(v) => v===null ? '<span style="color:var(--muted);font-size:0.8em">N/A</span>' : fmtETB(v),
+      fmt:(v) => v===null ? '<span style="color:var(--muted);font-size:0.8em">N/A</span>' : fmtQty(v),
       raw:true,
     })),
   ];
@@ -325,7 +325,7 @@ async function renderAmcDistribution() {
   const exportCols = [
     { key:"code", label:"Material Code" }, { key:"desc", label:"Description" },
     { key:"type", label:"Type" }, { key:"_stocked", label:"Plants Stocked" },
-    { key:"_total", label:"Total AMC (ETB)" },
+    { key:"_total", label:"Total AMC (Qty)" },
     ...amcPlants.map(p => ({ key:`_p_${p}`, label:p,
       fmt:(v)=>v===null?"N/A":String(Number(v).toFixed(2)) })),
   ];
@@ -419,7 +419,7 @@ async function renderAmcCoverage() {
       fmt:(v) => `<span style="font-weight:600;color:${v===amcPlants.length?'var(--green)':v===0?'var(--red)':'var(--orange)'}">${v} / ${amcPlants.length}</span>`, raw:true },
     { key:"_naPlants",  label:"N/A Plants",
       fmt:(v,r) => v ? `<span style="font-size:0.78em;color:var(--red)">${escHtml(v)}</span>` : '<span style="color:var(--green)">None</span>', raw:true },
-    { key:"_totalAMC",  label:"Total AMC (ETB)", fmt:fmtETB },
+    { key:"_totalAMC",  label:"Total AMC (Qty)", fmt:fmtQty },
   ];
 
   let tableRows = rows.map(r => ({
@@ -447,7 +447,7 @@ async function renderAmcCoverage() {
   // Export
   const exportCols = [
     {key:"code",label:"Material Code"},{key:"desc",label:"Description"},{key:"type",label:"Type"},
-    {key:"_stocked",label:"Plants w/ Stock"},{key:"_naPlants",label:"N/A Plants"},{key:"_totalAMC",label:"Total AMC (ETB)"},
+    {key:"_stocked",label:"Plants w/ Stock"},{key:"_naPlants",label:"N/A Plants"},{key:"_totalAMC",label:"Total AMC (Qty)"},
   ];
   const dlRow = document.getElementById("amc-cov-dl-row");
   if (dlRow) {
@@ -554,11 +554,11 @@ async function renderAmcImbalance() {
       raw:true, cellClass:"col-mat-code-wrap" },
     { key:"desc", label:"Description", cellClass:"col-mat-desc-wrap" },
     { key:"type", label:"Type" },
-    { key:"_topPlant", label:"Top Plant", fmt:(v,r)=>`<b>${escHtml(v)}</b> (${fmtETB(r._topVal)})`, raw:true },
+    { key:"_topPlant", label:"Top Plant", fmt:(v,r)=>`<b>${escHtml(v)}</b> (${fmtQty(r._topVal)})`, raw:true },
     { key:"_ratio",    label:"Max/Avg Ratio", fmt:v=>`<b style="color:var(--red)">${Number(v).toFixed(1)}×</b>`, raw:true },
     { key:"_gini",     label:"Gini",    fmt:v=>`${Number(v).toFixed(3)}`, raw:true },
     { key:"_zeroCount",label:"Zero-Stock Plants", fmt:(v,r)=>v ? `<span style="color:var(--red);font-weight:600">${v}</span> <span style="font-size:0.77em;color:var(--muted)">(${escHtml(r._zeroPlants)})</span>` : '—', raw:true },
-    { key:"_totalAMC", label:"Total AMC (ETB)", fmt:fmtETB },
+    { key:"_totalAMC", label:"Total AMC (Qty)", fmt:fmtQty },
   ];
 
   document.getElementById("amc-imb-table").innerHTML = buildTable(
@@ -569,7 +569,7 @@ async function renderAmcImbalance() {
     {key:"code",label:"Material Code"},{key:"desc",label:"Description"},{key:"type",label:"Type"},
     {key:"_topPlant",label:"Top Plant"},{key:"_topVal",label:"Top Plant AMC"},
     {key:"_ratio",label:"Max/Avg Ratio"},{key:"_gini",label:"Gini Coefficient"},
-    {key:"_zeroPlants",label:"Zero-Stock Plants"},{key:"_totalAMC",label:"Total AMC (ETB)"},
+    {key:"_zeroPlants",label:"Zero-Stock Plants"},{key:"_totalAMC",label:"Total AMC (Qty)"},
   ];
   const dlRow = document.getElementById("amc-imb-dl-row");
   if (dlRow) {
@@ -762,8 +762,7 @@ async function renderAmcRedistribution() {
       allocQty: totalDeficitAMC > 0 ? (e.amc / totalDeficitAMC) * transferQty : transferQty / deficitEntries.length,
     }));
 
-    // Estimate ETB value of transfer using source AMC as a proxy unit value if no price available
-    // (transfer qty × AMC per unit is not meaningful; we show qty only when SOH is available)
+    // Transfer value proxy: qty × monthly consumption (quantity-based, not monetary)
     const mosDetailParts = plantMOS.map(e =>
       `${e.plant}: ${e.mos === null ? "N/A" : e.mos === Infinity ? "∞" : e.mos.toFixed(1)}mo`
     );
@@ -905,10 +904,10 @@ async function renderAmcRedistribution() {
         },
         hovertemplate: hasSoh
           ? "<b>%{y}</b><br>Source MOS: %{x:.1f} months<extra></extra>"
-          : "<b>%{y}</b><br>Excess AMC: ETB %{x:,.0f}<extra></extra>",
+          : "<b>%{y}</b><br>Excess AMC: %{x:,.0f} units<extra></extra>",
         text: top20.map(r => hasSoh
           ? `${r._sourceMOS.toFixed(1)} mo @ ${r._sourceP}`
-          : fmtETB(r._sourceAMC)
+          : fmtQty(r._sourceAMC)
         ).reverse(),
         textposition: "outside",
         textfont:{ size:9 },
@@ -917,7 +916,7 @@ async function renderAmcRedistribution() {
       ...PLOTLY_LAYOUT,
       height: Math.max(300, top20.length * 24 + 80),
       margin: { l:240, r:120, t:20, b:40 },
-      xaxis: { title: hasSoh ? "Source Plant MOS (months)" : "Excess AMC Value (ETB)" },
+      xaxis: { title: hasSoh ? "Source Plant MOS (months)" : "Excess AMC Value (Qty)" },
       yaxis: { tickfont:{size:10} },
       shapes: hasSoh ? [{
         type:"line", x0: MOS_HIGH, x1: MOS_HIGH,
@@ -952,13 +951,13 @@ async function renderAmcRedistribution() {
       fmt:(v,r)=>{
         const mosStr = r._sourceMOS !== null ? `<span style="color:var(--red);font-weight:700">${r._sourceMOS.toFixed(1)} mo</span>` : "";
         const sohStr = r._sourceSOH !== null ? `<span style="color:var(--muted);font-size:0.78em"> · SOH: ${fmtQty(r._sourceSOH)}</span>` : "";
-        const amcStr = `<span style="color:var(--muted);font-size:0.78em"> · AMC: ${fmtETB(r._sourceAMC)}</span>`;
+        const amcStr = `<span style="color:var(--muted);font-size:0.78em"> · AMC: ${fmtQty(r._sourceAMC)} units</span>`;
         return `<b style="color:var(--orange)">${escHtml(v)}</b> ${mosStr}${sohStr}${amcStr}`;
       }, raw:true },
     { key:"_transferQty", label:"Transfer Qty",
       fmt:(v,r)=> v !== null
         ? `<b style="color:var(--blue)">${fmtQty(v)}</b><span style="color:var(--muted);font-size:0.78em"> units</span>`
-        : `<span style="color:var(--muted);font-size:0.78em">${fmtETB(r._transferVal)} AMC-equiv</span>`,
+        : `<span style="color:var(--muted);font-size:0.78em">${fmtQty(r._transferVal)} units AMC-equiv</span>`,
       raw:true },
     { key:"_targets",    label:"Recipient Plants",
       fmt:(v,r)=>{
@@ -1011,7 +1010,7 @@ async function renderAmcRedistribution() {
           ? `<span style="color:var(--muted);font-size:0.78em"> · SOH: ${fmtQty(r._sourceSOH)}</span>` : "";
         return `<b style="color:var(--blue)">${escHtml(v)}</b> ${mosStr}${sohStr}`;
       }, raw:true },
-    { key:"_sourceAMC", label:"AMC", fmt:fmtETB },
+    { key:"_sourceAMC", label:"AMC (Qty)", fmt:fmtQty },
     { key:"_action",    label:"Recommendation",
       fmt:()=>`<span style="padding:2px 8px;border-radius:4px;background:rgba(139,99,204,0.15);color:var(--purple);font-size:0.78em;font-weight:600">PLAN REDISTRIBUTION</span>`,
       raw:true },
@@ -1046,7 +1045,7 @@ async function renderAmcRedistribution() {
     {key:"_sourceP",     label:"Source Plant"},
     {key:"_sourceMOS",   label:"Source MOS (months)", fmt:v=>v!==null&&v!==undefined?Number(v).toFixed(1):"N/A"},
     {key:"_sourceSOH",   label:"Source SOH (units)",  fmt:v=>v!==null&&v!==undefined?Number(v).toFixed(0):"N/A"},
-    {key:"_sourceAMC",   label:"Source AMC (ETB)",    fmt:v=>v!==null&&v!==undefined?Number(v).toFixed(2):"N/A"},
+    {key:"_sourceAMC",   label:"Source AMC (Qty)",    fmt:v=>v!==null&&v!==undefined?Number(v).toFixed(0):"N/A"},
     {key:"_transferQty", label:"Transfer Qty (units)", fmt:v=>v!==null&&v!==undefined?Number(v).toFixed(0):""},
     {key:"_targets",     label:"Recipient Plants"},
     {key:"_targetLines", label:"Per-Plant Allocation"},
