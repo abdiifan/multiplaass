@@ -59,6 +59,19 @@
     <button class="nav-btn" data-page="concentration">
       <span class="nav-icon">🎯</span> Stock Concentration
     </button>
+    <div class="nav-label" style="margin-top:0.75rem">AMC Analysis</div>
+    <button class="nav-btn" data-page="amc-distribution">
+      <span class="nav-icon">🏭</span> HO01 Distribution
+    </button>
+    <button class="nav-btn" data-page="amc-coverage">
+      <span class="nav-icon">🗺️</span> AMC Coverage Map
+    </button>
+    <button class="nav-btn" data-page="amc-imbalance">
+      <span class="nav-icon">⚖️</span> Stock Imbalance
+    </button>
+    <button class="nav-btn" data-page="amc-redistribution">
+      <span class="nav-icon">🔄</span> Redistribution
+    </button>
   </nav>
 
   <div class="sidebar-divider"></div>
@@ -92,6 +105,14 @@
     <input type="file" id="mappingFileInput" accept=".xlsx,.xls" />
   </label>
   <div id="mappingFileStatus"></div>
+
+  <div class="sidebar-divider"></div>
+  <div class="upload-label">📊 AMC Plant Stock</div>
+  <label class="upload-btn" style="background:var(--card-bg);border:1.5px solid var(--blue)" for="amcFileInput">
+    <span id="amcUploadBtnText">📊 Upload AMC.xlsx</span>
+    <input type="file" id="amcFileInput" accept=".xlsx,.xls" />
+  </label>
+  <div id="amcFileStatus"></div>
 
 </aside>
 
@@ -488,6 +509,135 @@
         <div class="conc-chart-sub" style="margin-bottom:0.9rem">How many distinct plants hold each material (unrestricted stock only)</div>
         <div id="chart-conc-spread" style="min-height:260px;flex:1"></div>
       </div>
+    </div>
+  </section>
+
+  <!-- ── AMC: HO01 DISTRIBUTION TRACKER ── -->
+  <section id="page-amc-distribution" class="page" style="display:none">
+    <div class="page-header-row">
+      <div>
+        <div class="page-title">🏭 HO01 Distribution Tracker</div>
+        <div class="page-subtitle">See how the central hub (HO01) distributes each item across all 18 branch plants</div>
+      </div>
+      <div id="amc-dist-dl-row" style="display:flex;gap:0.6rem"></div>
+    </div>
+    <div id="amc-no-file" class="alert-info" style="margin-bottom:1rem">Upload <b>AMC.xlsx</b> using the <b>📊 Upload AMC.xlsx</b> button in the sidebar to enable AMC analysis pages.</div>
+    <div id="amc-dist-content" style="display:none">
+      <div class="filter-bar" style="gap:0.6rem;flex-wrap:wrap;align-items:center">
+        <input id="amc-dist-search" type="text" placeholder="Search material…" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:0.82rem;min-width:220px"/>
+        <select id="amc-dist-type" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:0.82rem">
+          <option value="">All Types</option>
+          <option value="ZME">ZME (Medicines)</option>
+          <option value="ZMS">ZMS (Medical Supplies)</option>
+        </select>
+        <button class="apply-btn small" id="amc-dist-apply">Apply</button>
+        <button class="apply-btn secondary small" id="amc-dist-clear">Clear</button>
+      </div>
+      <div class="kpi-row" id="amc-dist-kpis" style="margin:1rem 0"></div>
+      <div class="section-header">📦 HO01 Stock vs Branch Distribution</div>
+      <div class="chart-box full"><div id="chart-amc-dist" style="min-height:320px"></div></div>
+      <div class="section-header" style="margin-top:1.5rem">📋 Item-by-Item Distribution Table</div>
+      <div id="amc-dist-table"></div>
+    </div>
+  </section>
+
+  <!-- ── AMC: COVERAGE MAP ── -->
+  <section id="page-amc-coverage" class="page" style="display:none">
+    <div class="page-header-row">
+      <div>
+        <div class="page-title">🗺️ AMC Coverage Map</div>
+        <div class="page-subtitle">Which plants stock which medicines — N/A gap analysis across all 19 plants</div>
+      </div>
+      <div id="amc-cov-dl-row" style="display:flex;gap:0.6rem"></div>
+    </div>
+    <div id="amc-cov-no-file" class="alert-info" style="margin-bottom:1rem">Upload <b>AMC.xlsx</b> using the sidebar to enable this page.</div>
+    <div id="amc-cov-content" style="display:none">
+      <div class="filter-bar" style="gap:0.6rem;flex-wrap:wrap;align-items:center">
+        <select id="amc-cov-plant" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:0.82rem">
+          <option value="">All Plants</option>
+        </select>
+        <select id="amc-cov-type" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:0.82rem">
+          <option value="">All Types</option>
+          <option value="ZME">ZME (Medicines)</option>
+          <option value="ZMS">ZMS (Medical Supplies)</option>
+        </select>
+        <select id="amc-cov-view" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:0.82rem">
+          <option value="gaps">Show N/A Gaps Only</option>
+          <option value="all">Show All Coverage</option>
+          <option value="covered">Show Stocked Only</option>
+        </select>
+        <button class="apply-btn small" id="amc-cov-apply">Apply</button>
+      </div>
+      <div class="kpi-row" id="amc-cov-kpis" style="margin:1rem 0"></div>
+      <div class="section-header">🌐 Plant Coverage Heatmap — Items Stocked per Plant</div>
+      <div class="chart-box full"><div id="chart-amc-coverage" style="min-height:300px"></div></div>
+      <div class="section-header" style="margin-top:1.5rem">📋 Coverage Detail Table</div>
+      <div id="amc-cov-table"></div>
+    </div>
+  </section>
+
+  <!-- ── AMC: STOCK IMBALANCE ALERT ── -->
+  <section id="page-amc-imbalance" class="page" style="display:none">
+    <div class="page-header-row">
+      <div>
+        <div class="page-title">⚖️ Stock Imbalance Alert</div>
+        <div class="page-subtitle">Items where one plant hoards excess stock while others have zero — flag for rebalancing</div>
+      </div>
+      <div id="amc-imb-dl-row" style="display:flex;gap:0.6rem"></div>
+    </div>
+    <div id="amc-imb-no-file" class="alert-info" style="margin-bottom:1rem">Upload <b>AMC.xlsx</b> using the sidebar to enable this page.</div>
+    <div id="amc-imb-content" style="display:none">
+      <div class="filter-bar" style="gap:0.6rem;flex-wrap:wrap;align-items:center">
+        <label style="font-size:0.8rem;color:var(--muted)">Imbalance Threshold:</label>
+        <select id="amc-imb-threshold" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:0.82rem">
+          <option value="5">5× — Moderate (max ≥ 5× average)</option>
+          <option value="10" selected>10× — High (max ≥ 10× average)</option>
+          <option value="20">20× — Critical (max ≥ 20× average)</option>
+        </select>
+        <select id="amc-imb-type" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:0.82rem">
+          <option value="">All Types</option>
+          <option value="ZME">ZME (Medicines)</option>
+          <option value="ZMS">ZMS (Medical Supplies)</option>
+        </select>
+        <button class="apply-btn small" id="amc-imb-apply">Apply</button>
+      </div>
+      <div class="kpi-row" id="amc-imb-kpis" style="margin:1rem 0"></div>
+      <div class="alert-warning" style="margin-bottom:0.8rem;font-size:0.78rem">⚠️ Items flagged below have extreme stock concentration — one or more plants hold far more than needed while others are at zero. Review for redistribution.</div>
+      <div class="section-header">🔴 Imbalanced Items — Top Offenders by Gini Coefficient</div>
+      <div class="chart-box full"><div id="chart-amc-imbalance" style="min-height:300px"></div></div>
+      <div class="section-header" style="margin-top:1.5rem">📋 Imbalance Detail Table</div>
+      <div id="amc-imb-table"></div>
+    </div>
+  </section>
+
+  <!-- ── AMC: REDISTRIBUTION SUGGESTION ── -->
+  <section id="page-amc-redistribution" class="page" style="display:none">
+    <div class="page-header-row">
+      <div>
+        <div class="page-title">🔄 Redistribution Suggestion</div>
+        <div class="page-subtitle">AI-powered recommendations: move excess from HO01 or overstocked plants to zero-stock branches</div>
+      </div>
+      <div id="amc-redist-dl-row" style="display:flex;gap:0.6rem"></div>
+    </div>
+    <div id="amc-redist-no-file" class="alert-info" style="margin-bottom:1rem">Upload <b>AMC.xlsx</b> using the sidebar to enable this page.</div>
+    <div id="amc-redist-content" style="display:none">
+      <div class="filter-bar" style="gap:0.6rem;flex-wrap:wrap;align-items:center">
+        <select id="amc-redist-source" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:0.82rem">
+          <option value="HO01">Source: HO01 only</option>
+          <option value="any">Source: Any overstocked plant</option>
+        </select>
+        <select id="amc-redist-type" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:0.82rem">
+          <option value="">All Types</option>
+          <option value="ZME">ZME (Medicines)</option>
+          <option value="ZMS">ZMS (Medical Supplies)</option>
+        </select>
+        <button class="apply-btn small" id="amc-redist-apply">Apply</button>
+      </div>
+      <div class="kpi-row" id="amc-redist-kpis" style="margin:1rem 0"></div>
+      <div class="section-header">🔄 Top Redistribution Opportunities</div>
+      <div class="chart-box full"><div id="chart-amc-redist" style="min-height:300px"></div></div>
+      <div class="section-header" style="margin-top:1.5rem">📋 Redistribution Action Plan</div>
+      <div id="amc-redist-table"></div>
     </div>
   </section>
 
