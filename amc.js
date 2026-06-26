@@ -579,103 +579,365 @@ async function renderAmcImbalance() {
   }
 }
 
-// ── 4. REDISTRIBUTION SUGGESTION ─────────────────────────────────────────────
+// ── MOS HELPERS ───────────────────────────────────────────────────────────────
+/**
+ * Builds a nested lookup: materialCode → plantCode → SOH (unrestricted qty).
+ * Uses the global rawDf (inventory snapshot) when available.
+ * Returns an empty Map if rawDf is not loaded.
+ */
+function buildSohMap() {
+  const map = new Map(); // materialCode → { plantCode: qty }
+  if (typeof rawDf === "undefined" || !rawDf.length) return map;
+  for (const row of rawDf) {
+    const mat  = String(row._mappedMaterial || row["Material"] || "").trim();
+    const plt  = String(row["Plant"] || "").trim().toUpperCase();
+    const qty  = Number(row["Unrestricted Stock"] || 0);
+    if (!mat || !plt) continue;
+    if (!map.has(mat)) map.set(mat, {});
+    map.get(mat)[plt] = (map.get(mat)[plt] || 0) + qty;
+  }
+  return map;
+}
+
+/**
+ * Given SOH and AMC for a plant, return Months of Stock (MOS).
+ * Returns null when AMC is zero/null (can't divide by zero).
+ * Returns Infinity when SOH > 0 but AMC is 0 (infinite coverage).
+ */
+function calcMOS(soh, amc) {
+  if (amc === null || amc === undefined) return null;
+  if (amc === 0) return soh > 0 ? Infinity : null;
+  return soh / amc;
+}
+
+/** Format MOS for display */
+function fmtMOS(mos) {
+  if (mos === null || mos === undefined) return '<span style="color:var(--muted);font-size:0.8em">N/A</span>';
+  if (mos === Infinity) return '<span style="color:var(--orange)">∞</span>';
+  return `<b>${Number(mos).toFixed(1)}</b> mo`;
+}
+
+/** Color a MOS value for badge display */
+function mosBadgeStyle(mos) {
+  if (mos === null) return "color:var(--muted)";
+  if (mos === Infinity || mos > 6) return "color:var(--red);font-weight:700";
+  if (mos >= 3) return "color:var(--green);font-weight:600";
+  if (mos >= 1) return "color:var(--orange);font-weight:600";
+  return "color:var(--red);font-weight:700";
+}
+
+// ── 4. REDISTRIBUTION SUGGESTION (MOS-BASED) ─────────────────────────────────
+//
+// TWO-TIER LOGIC (as Supply Specialist):
+//
+// TIER 1 — SURPLUS TRANSFER (MOS > 6 months at source):
+//   Find all plants where MOS > 6.  For each such plant+item, suggest transfer
+//   to any plant of the same item where MOS < 6.  Transfer qty = bring source
+//   down to exactly 6 months; distribute among deficit plants proportionally.
+//
+// TIER 2 — ISOLATION FLAG (MOS 1–6, item absent elsewhere):
+//   Items where every plant has 1 < MOS < 6 AND the item does not appear in
+//   any other plant at all.  These need redistribution planning even though no
+//   plant is in acute surplus — they are isolated and at future risk.
+//
 async function renderAmcRedistribution() {
   await waitForPlotly();
   if (!amcMerged.length) return;
 
-  const sourceEl = document.getElementById("amc-redist-source");
-  const typeEl   = document.getElementById("amc-redist-type");
-  const personEl = document.getElementById("amc-redist-person");
-  const sourceMode = sourceEl ? sourceEl.value : "any";
-  const typeVal    = typeEl   ? typeEl.value.trim() : "";
-  const personVal  = personEl ? personEl.value.trim() : "";
+  const sourceEl   = document.getElementById("amc-redist-source");
+  const typeEl     = document.getElementById("amc-redist-type");
+  const personEl   = document.getElementById("amc-redist-person");
+  const mosThrEl   = document.getElementById("amc-redist-mos-threshold");
+  const sourceMode = sourceEl  ? sourceEl.value       : "any";
+  const typeVal    = typeEl    ? typeEl.value.trim()   : "";
+  const personVal  = personEl  ? personEl.value.trim() : "";
+  const MOS_HIGH   = mosThrEl  ? Number(mosThrEl.value) || 6 : 6; // surplus threshold
+  const MOS_LOW    = 1;  // below this = critical shortage, not redistribution target
   populatePersonSelect("amc-redist-person");
 
   let rows = getAmcFilteredRows(typeVal, personVal);
 
-  // Build redistribution suggestions:
-  // For each item, find plants with excess (> 2× average) and plants with zero.
-  const suggestions = [];
+  // ── Build SOH lookup from inventory file (rawDf) ─────────────────────────
+  const sohMap     = buildSohMap();
+  const hasSoh     = sohMap.size > 0;
+
+  // ── Plant code → plant name mapping from rawDf ────────────────────────────
+  const plantNames = {}; // plantCode → Plant Name
+  if (hasSoh && typeof rawDf !== "undefined") {
+    for (const row of rawDf) {
+      const code = String(row["Plant"] || "").trim().toUpperCase();
+      const name = String(row["Plant Name"] || "").trim();
+      if (code && name && !plantNames[code]) plantNames[code] = name;
+    }
+  }
+  const pLabel = p => plantNames[p] ? `${p} (${plantNames[p]})` : p;
+
+  // ── TIER 1: SURPLUS TRANSFER ──────────────────────────────────────────────
+  const surplusSuggestions = [];
+
   for (const r of rows) {
-    const stocked = amcPlants.filter(p => r.amcs[p] !== null);
-    if (stocked.length < 2) continue;
+    const stockedPlants = amcPlants.filter(p => r.amcs[p] !== null && r.amcs[p] > 0);
+    if (!stockedPlants.length) continue;
 
-    const vals  = stocked.map(p => ({ plant:p, amc: r.amcs[p] || 0 }));
-    const mean  = vals.reduce((s,v)=>s+v.amc,0) / vals.length;
-    if (!mean) continue;
+    // Per-plant MOS
+    const plantMOS = stockedPlants.map(p => {
+      const amc = r.amcs[p];           // monthly consumption at plant
+      const soh = hasSoh
+        ? (sohMap.get(r.code)?.[p] ?? sohMap.get(r.origCode)?.[p] ?? 0)
+        : null;
+      const mos = hasSoh ? calcMOS(soh, amc) : null;
+      return { plant: p, amc, soh, mos };
+    });
 
-    // Deficit plants: stocked but AMC = 0 OR not stocked at all (N/A in AMC means not carried)
-    // Here we flag: stocked plants with 0 AMC = zero-demand or out of stock
-    const zeroPlantsInAMC = vals.filter(v => v.amc === 0).map(v=>v.plant);
-    const surplusPlants   = vals.filter(v => v.amc > mean * 2);
+    // When no SOH file — fall back to AMC-only logic (original behaviour):
+    // treat plants with AMC > 2× mean as "surplus" and AMC = 0 plants as "deficit"
+    if (!hasSoh) {
+      const vals = stockedPlants.map(p => ({ plant:p, amc: r.amcs[p] || 0 }));
+      const mean = vals.reduce((s,v)=>s+v.amc,0) / vals.length;
+      if (!mean) continue;
+      const zeroPlantsInAMC = amcPlants.filter(p => r.amcs[p] === 0).map(p => p);
+      const surplusPlants   = vals.filter(v => v.amc > mean * 2);
+      if (!surplusPlants.length || !zeroPlantsInAMC.length) continue;
+      if (sourceMode === "HO01") {
+        const ho01 = surplusPlants.find(v => v.plant === "HO01");
+        if (!ho01) continue;
+        surplusPlants.length = 0; surplusPlants.push(ho01);
+      }
+      const topSource = surplusPlants.sort((a,b)=>b.amc-a.amc)[0];
+      const excess    = topSource.amc - mean * 1.5;
+      if (excess <= 0) continue;
+      const perRecipient = excess / zeroPlantsInAMC.length;
+      surplusSuggestions.push({
+        _tier:        1,
+        code:         r.code,
+        desc:         r.desc,
+        type:         r.type,
+        person:       r.person,
+        isMerged:     r.isMerged,
+        origCodes:    r.origCodes,
+        _sourceP:     topSource.plant,
+        _sourceMOS:   null,
+        _sourceSOH:   null,
+        _sourceAMC:   topSource.amc,
+        _transferQty: null,
+        _transferVal: excess,
+        _targets:     zeroPlantsInAMC.join(", "),
+        _targetCount: zeroPlantsInAMC.length,
+        _perTarget:   perRecipient,
+        _action:      "TRANSFER",
+        _priority:    excess / mean,
+        _mosDetail:   "",
+      });
+      continue;
+    }
 
-    if (!surplusPlants.length || !zeroPlantsInAMC.length) continue;
+    // ── SOH-aware MOS path ────────────────────────────────────────────────
+    // Source = plants where MOS > MOS_HIGH
+    const surplusEntries = plantMOS.filter(e =>
+      e.mos !== null && e.mos !== Infinity && e.mos > MOS_HIGH &&
+      (sourceMode !== "HO01" || e.plant === "HO01")
+    );
+    // Deficit = plants of same item with MOS < MOS_HIGH (but > 0 so they consume)
+    const deficitEntries = plantMOS.filter(e =>
+      e.mos !== null && e.mos < MOS_HIGH && e.mos >= 0 && e.amc > 0
+    );
 
-    // If sourceMode === "HO01", only HO01 as surplus source
-    // (HO01 doesn't appear in AMC as a plant here, so we use highest-AMC plant as "HO01-equivalent" source)
-    const sortedSurplus = surplusPlants.sort((a,b) => b.amc - a.amc);
-    const topSource     = sortedSurplus[0];
+    if (!surplusEntries.length || !deficitEntries.length) continue;
 
-    // Suggested transfer = bring source down to 1.5× mean, distribute surplus
-    const excess       = topSource.amc - mean * 1.5;
-    const perRecipient = zeroPlantsInAMC.length > 0 ? excess / zeroPlantsInAMC.length : 0;
+    // Pick the most surplus source
+    surplusEntries.sort((a,b) => b.mos - a.mos);
+    const src = surplusEntries[0];
 
-    if (excess <= 0) continue;
+    // Transfer qty = bring source down to exactly MOS_HIGH months
+    const transferQty = Math.max(0, src.soh - MOS_HIGH * src.amc);
+    if (transferQty <= 0) continue;
 
-    suggestions.push({
+    // Distribute proportionally to deficit plants by their AMC (higher AMC = more urgent)
+    const totalDeficitAMC = deficitEntries.reduce((s,e)=>s+e.amc, 0);
+    const targetLines = deficitEntries.map(e => ({
+      plant:    e.plant,
+      curMOS:   e.mos,
+      amc:      e.amc,
+      soh:      e.soh,
+      allocQty: totalDeficitAMC > 0 ? (e.amc / totalDeficitAMC) * transferQty : transferQty / deficitEntries.length,
+    }));
+
+    // Estimate ETB value of transfer using source AMC as a proxy unit value if no price available
+    // (transfer qty × AMC per unit is not meaningful; we show qty only when SOH is available)
+    const mosDetailParts = plantMOS.map(e =>
+      `${e.plant}: ${e.mos === null ? "N/A" : e.mos === Infinity ? "∞" : e.mos.toFixed(1)}mo`
+    );
+
+    surplusSuggestions.push({
+      _tier:        1,
       code:         r.code,
       desc:         r.desc,
       type:         r.type,
+      person:       r.person,
       isMerged:     r.isMerged,
       origCodes:    r.origCodes,
-      _sourceP:     topSource.plant,
-      _sourceAMC:   topSource.amc,
-      _mean:        mean,
-      _excess:      excess,
-      _targets:     zeroPlantsInAMC.join(", "),
-      _targetCount: zeroPlantsInAMC.length,
-      _perTarget:   perRecipient,
-      _priority:    excess / mean, // higher = more urgent
+      _sourceP:     src.plant,
+      _sourceMOS:   src.mos,
+      _sourceSOH:   src.soh,
+      _sourceAMC:   src.amc,
+      _transferQty: transferQty,
+      _transferVal: transferQty * src.amc, // proxy: qty × monthly consumption
+      _targets:     deficitEntries.map(e=>e.plant).join(", "),
+      _targetLines: targetLines,
+      _targetCount: deficitEntries.length,
+      _perTarget:   transferQty / deficitEntries.length,
+      _action:      "TRANSFER",
+      _priority:    src.mos / MOS_HIGH, // how many times over the threshold
+      _mosDetail:   mosDetailParts.join(" | "),
     });
   }
 
-  suggestions.sort((a,b) => b._priority - a._priority);
+  surplusSuggestions.sort((a,b) => b._priority - a._priority);
 
-  // KPIs
-  const totalExcess = suggestions.reduce((s,r)=>s+r._excess,0);
+  // ── TIER 2: ISOLATION FLAG (1 < MOS < 6, item absent from other plants) ──
+  const isolatedSuggestions = [];
+
+  for (const r of rows) {
+    // Count plants where this item exists in AMC (has non-null AMC > 0)
+    const presentIn = amcPlants.filter(p => r.amcs[p] !== null && r.amcs[p] > 0);
+    if (presentIn.length === 0) continue;
+
+    // Skip if already flagged in Tier 1 (has a surplus source)
+    const alreadyFlagged = surplusSuggestions.some(s => s.code === r.code);
+    if (alreadyFlagged) continue;
+
+    // All present plants must have MOS between MOS_LOW and MOS_HIGH
+    if (!hasSoh) continue; // requires SOH data for MOS
+
+    const plantMOS = presentIn.map(p => {
+      const amc = r.amcs[p];
+      const soh = sohMap.get(r.code)?.[p] ?? sohMap.get(r.origCode)?.[p] ?? 0;
+      const mos = calcMOS(soh, amc);
+      return { plant: p, amc, soh, mos };
+    });
+
+    // All plants must be in the 1–6 range (not critical, not surplus)
+    const inRange = plantMOS.every(e =>
+      e.mos !== null && e.mos > MOS_LOW && e.mos <= MOS_HIGH
+    );
+    if (!inRange) continue;
+
+    // Item must NOT appear in any other plant (isolated — not distributed)
+    if (presentIn.length > 1) continue; // already multi-plant, skip isolation flag
+
+    const onlyPlant = plantMOS[0];
+    const mosDetailParts = plantMOS.map(e =>
+      `${e.plant}: ${e.mos === null ? "N/A" : e.mos.toFixed(1)}mo`
+    );
+
+    isolatedSuggestions.push({
+      _tier:        2,
+      code:         r.code,
+      desc:         r.desc,
+      type:         r.type,
+      person:       r.person,
+      isMerged:     r.isMerged,
+      origCodes:    r.origCodes,
+      _sourceP:     onlyPlant.plant,
+      _sourceMOS:   onlyPlant.mos,
+      _sourceSOH:   onlyPlant.soh,
+      _sourceAMC:   onlyPlant.amc,
+      _transferQty: null,
+      _transferVal: null,
+      _targets:     "(No other plant carries this item)",
+      _targetLines: [],
+      _targetCount: 0,
+      _perTarget:   0,
+      _action:      "PLAN REDISTRIBUTION",
+      _priority:    0,
+      _mosDetail:   mosDetailParts.join(" | "),
+    });
+  }
+
+  // ── COMBINED TABLE ────────────────────────────────────────────────────────
+  const allSuggestions = [...surplusSuggestions, ...isolatedSuggestions];
+
+  // ── KPIs ──────────────────────────────────────────────────────────────────
+  const totalTransferQty = surplusSuggestions.reduce((s,r)=>s+(r._transferQty||0),0);
+  const totalTransferVal = surplusSuggestions.reduce((s,r)=>s+(r._transferVal||0),0);
   amcKpiRow("amc-redist-kpis", [
-    amcKpiCard("Redistribution Opportunities", suggestions.length.toLocaleString(), "Items w/ excess + zero plants", "blue"),
-    amcKpiCard("Total Excess AMC", fmtETB(totalExcess), "Potential to redistribute", "orange"),
-    amcKpiCard("Unique Source Plants", [...new Set(suggestions.map(r=>r._sourceP))].length.toLocaleString(), "Plants with surplus", "green"),
-    amcKpiCard("Unique Target Plants", [...new Set(suggestions.flatMap(r=>r._targets.split(", ").filter(Boolean)))].length.toLocaleString(), "Plants needing stock", "red"),
+    amcKpiCard(
+      "Surplus Transfer Items",
+      surplusSuggestions.length.toLocaleString(),
+      `MOS > ${MOS_HIGH} mo at source plant`,
+      "red"
+    ),
+    amcKpiCard(
+      "Est. Transfer Qty",
+      hasSoh ? fmtQty(totalTransferQty) : "—",
+      hasSoh ? "Units to move from surplus plants" : "Load inventory file for qty",
+      "orange"
+    ),
+    amcKpiCard(
+      "Isolated Items (Plan Needed)",
+      isolatedSuggestions.length.toLocaleString(),
+      `1–${MOS_HIGH} mo, single-plant only`,
+      "purple"
+    ),
+    amcKpiCard(
+      "Unique Source Plants",
+      [...new Set(surplusSuggestions.map(r=>r._sourceP))].length.toLocaleString(),
+      "Plants with >6 mo stock",
+      "blue"
+    ),
   ]);
 
-  // Chart: top 20 by excess
-  const top20 = suggestions.slice(0, 20);
-  Plotly.newPlot("chart-amc-redist", [{
-    type: "bar",
-    orientation: "h",
-    x: top20.map(r => r._excess).reverse(),
-    y: top20.map(r => (r.desc.length > 38 ? r.desc.substring(0,38)+"…" : r.desc)).reverse(),
-    marker: {
-      color: top20.map(r => r._priority > 5 ? "#f85149" : r._priority > 3 ? "#ffa657" : "#3a8fd4").reverse(),
-    },
-    hovertemplate: "<b>%{y}</b><br>Excess AMC: ETB %{x:,.0f}<extra></extra>",
-    text: top20.map(r => fmtETB(r._excess)).reverse(),
-    textposition: "outside",
-    textfont:{ size:9 },
-  }], {
-    ...PLOTLY_LAYOUT,
-    height: Math.max(300, top20.length * 22 + 80),
-    margin: { l:230, r:100, t:20, b:40 },
-    xaxis: { title:"Excess AMC Value (ETB)" },
-    yaxis: { tickfont:{size:10} },
-    paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
-  }, PLOTLY_CONFIG);
+  // ── CHART: MOS Distribution of surplus sources (Tier 1 only) ─────────────
+  const top20 = surplusSuggestions.slice(0, 20);
+  if (top20.length) {
+    Plotly.newPlot("chart-amc-redist", [
+      {
+        type: "bar",
+        orientation: "h",
+        name: "Source MOS (months)",
+        x: top20.map(r => hasSoh ? r._sourceMOS : r._sourceAMC).reverse(),
+        y: top20.map(r => (r.desc.length > 38 ? r.desc.substring(0,38)+"…" : r.desc)).reverse(),
+        marker: {
+          color: top20.map(r => {
+            const v = hasSoh ? r._sourceMOS : r._priority;
+            return v > 12 ? "#f85149" : v > 9 ? "#ffa657" : "#3a8fd4";
+          }).reverse(),
+        },
+        hovertemplate: hasSoh
+          ? "<b>%{y}</b><br>Source MOS: %{x:.1f} months<extra></extra>"
+          : "<b>%{y}</b><br>Excess AMC: ETB %{x:,.0f}<extra></extra>",
+        text: top20.map(r => hasSoh
+          ? `${r._sourceMOS.toFixed(1)} mo @ ${r._sourceP}`
+          : fmtETB(r._sourceAMC)
+        ).reverse(),
+        textposition: "outside",
+        textfont:{ size:9 },
+      },
+    ], {
+      ...PLOTLY_LAYOUT,
+      height: Math.max(300, top20.length * 24 + 80),
+      margin: { l:240, r:120, t:20, b:40 },
+      xaxis: { title: hasSoh ? "Source Plant MOS (months)" : "Excess AMC Value (ETB)" },
+      yaxis: { tickfont:{size:10} },
+      shapes: hasSoh ? [{
+        type:"line", x0: MOS_HIGH, x1: MOS_HIGH,
+        y0:-0.5, y1: top20.length - 0.5,
+        line:{ color:"#f85149", width:2, dash:"dot" },
+      }] : [],
+      annotations: hasSoh ? [{
+        x: MOS_HIGH, y: top20.length - 0.5, xanchor:"left",
+        text: `${MOS_HIGH}mo threshold`, showarrow:false,
+        font:{ color:"#f85149", size:10 },
+      }] : [],
+      paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+    }, PLOTLY_CONFIG);
+  } else {
+    document.getElementById("chart-amc-redist").innerHTML =
+      '<div class="alert-info" style="margin:1rem 0">✓ No surplus transfers required for current filters.</div>';
+  }
 
-  // Table
-  const cols = [
+  // ── TIER 1 TABLE ──────────────────────────────────────────────────────────
+  const tier1Cols = [
     { key:"code", label:"Material Code",
       fmt:(v,r)=>r.isMerged
         ? `<span class="col-mat-code">${escHtml(v)}</span><span class="mat-mapped-badge">MERGED</span>`
@@ -683,31 +945,119 @@ async function renderAmcRedistribution() {
       raw:true, cellClass:"col-mat-code-wrap" },
     { key:"desc",        label:"Description", cellClass:"col-mat-desc-wrap" },
     { key:"type",        label:"Type" },
+    { key:"person",      label:"Specialist",
+      fmt:v=>v?`<span style="font-size:0.78em;color:var(--muted)">👤 ${escHtml(v)}</span>`:"",
+      raw:true },
     { key:"_sourceP",    label:"Source Plant",
-      fmt:(v,r)=>`<b style="color:var(--orange)">${escHtml(v)}</b> (${fmtETB(r._sourceAMC)})`, raw:true },
-    { key:"_mean",       label:"Avg AMC", fmt:fmtETB },
-    { key:"_excess",     label:"Excess AMC",
-      fmt:v=>`<b style="color:var(--red)">${fmtETB(v)}</b>`, raw:true },
+      fmt:(v,r)=>{
+        const mosStr = r._sourceMOS !== null ? `<span style="color:var(--red);font-weight:700">${r._sourceMOS.toFixed(1)} mo</span>` : "";
+        const sohStr = r._sourceSOH !== null ? `<span style="color:var(--muted);font-size:0.78em"> · SOH: ${fmtQty(r._sourceSOH)}</span>` : "";
+        const amcStr = `<span style="color:var(--muted);font-size:0.78em"> · AMC: ${fmtETB(r._sourceAMC)}</span>`;
+        return `<b style="color:var(--orange)">${escHtml(v)}</b> ${mosStr}${sohStr}${amcStr}`;
+      }, raw:true },
+    { key:"_transferQty", label:"Transfer Qty",
+      fmt:(v,r)=> v !== null
+        ? `<b style="color:var(--blue)">${fmtQty(v)}</b><span style="color:var(--muted);font-size:0.78em"> units</span>`
+        : `<span style="color:var(--muted);font-size:0.78em">${fmtETB(r._transferVal)} AMC-equiv</span>`,
+      raw:true },
     { key:"_targets",    label:"Recipient Plants",
-      fmt:(v,r)=>`<span style="color:var(--green);font-size:0.8em">${escHtml(v)}</span><span style="color:var(--muted);font-size:0.75em"> (${r._targetCount} plants · ${fmtETB(r._perTarget)} each)</span>`, raw:true },
+      fmt:(v,r)=>{
+        if (!r._targetLines || !r._targetLines.length) {
+          return `<span style="color:var(--green);font-size:0.8em">${escHtml(v)}</span>`;
+        }
+        const lines = r._targetLines.map(t =>
+          `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:4px;background:var(--card-bg);border:1px solid var(--border);font-size:0.75em">
+            <b>${escHtml(t.plant)}</b>
+            <span style="color:var(--orange)">${t.curMOS !== null ? t.curMOS.toFixed(1)+"mo" : ""}</span>
+            <span style="color:var(--blue)">→ +${fmtQty(t.allocQty)}</span>
+          </span>`
+        ).join("");
+        return lines;
+      }, raw:true },
+    { key:"_mosDetail", label:"All-Plant MOS",
+      fmt:v=>v ? `<span style="font-size:0.73em;color:var(--muted)">${escHtml(v)}</span>` : "", raw:true },
   ];
 
-  document.getElementById("amc-redist-table").innerHTML = buildTable(
-    suggestions, cols, (row) => row._priority > 5 ? "row-critical" : row._priority > 3 ? "row-warning" : ""
-  );
+  const tier1El = document.getElementById("amc-redist-table-t1");
+  if (tier1El) {
+    tier1El.innerHTML = surplusSuggestions.length
+      ? buildTable(surplusSuggestions, tier1Cols, row =>
+          row._sourceMOS !== null && row._sourceMOS > 12 ? "row-critical"
+          : row._sourceMOS !== null && row._sourceMOS > 9  ? "row-warning"
+          : row._priority > 5 ? "row-critical"
+          : row._priority > 3 ? "row-warning"
+          : ""
+        )
+      : '<div class="alert-info" style="margin:0.5rem 0">✓ No surplus transfers flagged.</div>';
+  }
 
+  // ── TIER 2 TABLE ──────────────────────────────────────────────────────────
+  const tier2Cols = [
+    { key:"code", label:"Material Code",
+      fmt:(v,r)=>r.isMerged
+        ? `<span class="col-mat-code">${escHtml(v)}</span><span class="mat-mapped-badge">MERGED</span>`
+        : `<span class="col-mat-code">${escHtml(v)}</span>`,
+      raw:true, cellClass:"col-mat-code-wrap" },
+    { key:"desc",       label:"Description", cellClass:"col-mat-desc-wrap" },
+    { key:"type",       label:"Type" },
+    { key:"person",     label:"Specialist",
+      fmt:v=>v?`<span style="font-size:0.78em;color:var(--muted)">👤 ${escHtml(v)}</span>`:"", raw:true },
+    { key:"_sourceP",   label:"Only Plant",
+      fmt:(v,r)=>{
+        const mosStr = r._sourceMOS !== null
+          ? `<span style="color:var(--orange);font-weight:600">${r._sourceMOS.toFixed(1)} mo</span>`
+          : "";
+        const sohStr = r._sourceSOH !== null
+          ? `<span style="color:var(--muted);font-size:0.78em"> · SOH: ${fmtQty(r._sourceSOH)}</span>` : "";
+        return `<b style="color:var(--blue)">${escHtml(v)}</b> ${mosStr}${sohStr}`;
+      }, raw:true },
+    { key:"_sourceAMC", label:"AMC", fmt:fmtETB },
+    { key:"_action",    label:"Recommendation",
+      fmt:()=>`<span style="padding:2px 8px;border-radius:4px;background:rgba(139,99,204,0.15);color:var(--purple);font-size:0.78em;font-weight:600">PLAN REDISTRIBUTION</span>`,
+      raw:true },
+    { key:"_mosDetail", label:"MOS Detail",
+      fmt:v=>v?`<span style="font-size:0.73em;color:var(--muted)">${escHtml(v)}</span>`:"", raw:true },
+  ];
+
+  const tier2El = document.getElementById("amc-redist-table-t2");
+  if (tier2El) {
+    tier2El.innerHTML = hasSoh
+      ? (isolatedSuggestions.length
+          ? buildTable(isolatedSuggestions, tier2Cols, ()=>"row-warning")
+          : '<div class="alert-info" style="margin:0.5rem 0">✓ No isolated single-plant items found in the 1–6 month MOS range.</div>'
+        )
+      : '<div class="alert-info" style="margin:0.5rem 0">⚠️ Load the <b>Inventory snapshot</b> file to enable MOS-based isolation detection.</div>';
+  }
+
+  // ── EXPORT ────────────────────────────────────────────────────────────────
+  const exportRows = allSuggestions.map(r => ({
+    ...r,
+    _targetLines: r._targetLines
+      ? r._targetLines.map(t=>`${t.plant}(MOS:${t.curMOS!==null?t.curMOS.toFixed(1):"N/A"} +${t.allocQty.toFixed(0)}u)`).join("; ")
+      : "",
+  }));
   const exportCols = [
-    {key:"code",label:"Material Code"},{key:"desc",label:"Description"},{key:"type",label:"Type"},
-    {key:"_sourceP",label:"Source Plant"},{key:"_sourceAMC",label:"Source AMC"},
-    {key:"_mean",label:"Average AMC"},{key:"_excess",label:"Excess AMC"},
-    {key:"_targets",label:"Recipient Plants"},{key:"_targetCount",label:"# Recipients"},
-    {key:"_perTarget",label:"AMC per Recipient"},
+    {key:"_tier",        label:"Tier"},
+    {key:"code",         label:"Material Code"},
+    {key:"desc",         label:"Description"},
+    {key:"type",         label:"Type"},
+    {key:"person",       label:"Specialist"},
+    {key:"_action",      label:"Action"},
+    {key:"_sourceP",     label:"Source Plant"},
+    {key:"_sourceMOS",   label:"Source MOS (months)", fmt:v=>v!==null&&v!==undefined?Number(v).toFixed(1):"N/A"},
+    {key:"_sourceSOH",   label:"Source SOH (units)",  fmt:v=>v!==null&&v!==undefined?Number(v).toFixed(0):"N/A"},
+    {key:"_sourceAMC",   label:"Source AMC (ETB)",    fmt:v=>v!==null&&v!==undefined?Number(v).toFixed(2):"N/A"},
+    {key:"_transferQty", label:"Transfer Qty (units)", fmt:v=>v!==null&&v!==undefined?Number(v).toFixed(0):""},
+    {key:"_targets",     label:"Recipient Plants"},
+    {key:"_targetLines", label:"Per-Plant Allocation"},
+    {key:"_mosDetail",   label:"All-Plant MOS Detail"},
   ];
+
   const dlRow = document.getElementById("amc-redist-dl-row");
   if (dlRow) {
     dlRow.innerHTML = '<button class="dl-btn">⬇ CSV</button><button class="dl-btn">⬇ Excel</button>';
-    dlRow.querySelectorAll(".dl-btn")[0].onclick = () => downloadCSV(suggestions,   exportCols, "amc_redistribution.csv");
-    dlRow.querySelectorAll(".dl-btn")[1].onclick = () => downloadExcel(suggestions, exportCols, "amc_redistribution.xlsx");
+    dlRow.querySelectorAll(".dl-btn")[0].onclick = () => downloadCSV(exportRows,   exportCols, "amc_redistribution.csv");
+    dlRow.querySelectorAll(".dl-btn")[1].onclick = () => downloadExcel(exportRows, exportCols, "amc_redistribution.xlsx");
   }
 }
 
