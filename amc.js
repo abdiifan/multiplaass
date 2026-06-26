@@ -12,6 +12,7 @@
 let amcRaw      = [];    // parsed rows from AMC.xlsx
 let amcPlants   = [];    // ordered plant code list
 let amcMerged   = [];    // deduplicated rows (after mapping)
+let amcPersonMap = new Map(); // materialCode → PERSON name (from Sheet1)
 
 // ── AMC PLANT LABELS (friendly names where known) ─────────────────────────────
 const AMC_PLANT_LABELS = {
@@ -36,19 +37,33 @@ function loadAMCFile(file) {
 
       if (!rows.length) throw new Error("AMC file is empty.");
 
-      // Detect plant columns (everything except the first 3 meta cols)
-      const META = ["Material Code", "Description", "Material Type Code"];
+      // Parse Sheet1 for PERSON lookup (materialCode → person name)
+      amcPersonMap = new Map();
+      const sheet1Name = wb.SheetNames.find(n => n.toLowerCase() === "sheet1");
+      if (sheet1Name) {
+        const ws1   = wb.Sheets[sheet1Name];
+        const rows1 = XLSX.utils.sheet_to_json(ws1, { defval: null });
+        for (const r1 of rows1) {
+          const code1   = String(r1["Material Code"] || "").trim();
+          const person1 = String(r1["PERSON"] || "").trim().toUpperCase();
+          if (code1 && person1) amcPersonMap.set(code1, person1);
+        }
+      }
+
+      // Detect plant columns (everything except meta cols + PERSON)
+      const META = ["Material Code", "Description", "Material Type Code", "PERSON"];
       const firstRow = rows[0];
       const detectedPlants = Object.keys(firstRow).filter(k => !META.includes(k));
       if (!detectedPlants.length) throw new Error("No plant columns found in AMC file.");
 
       amcPlants = detectedPlants;
       amcRaw    = rows.map(r => ({
-        code:  String(r["Material Code"] || "").trim(),
-        desc:  String(r["Description"]   || "").trim(),
-        type:  String(r["Material Type Code"] || "").trim().toUpperCase(),
-        amcs:  Object.fromEntries(
-          detectedPlants.map(p => [p, (r[p] == null || r[p] === "") ? null : Number(r[p])])
+        code:   String(r["Material Code"] || "").trim(),
+        desc:   String(r["Description"]   || "").trim(),
+        type:   String(r["Material Type Code"] || "").trim().toUpperCase(),
+        person: amcPersonMap.get(String(r["Material Code"] || "").trim()) || "",
+        amcs:   Object.fromEntries(
+          detectedPlants.map(p => [p, (r[p] == null || r[p] === "" || typeof r[p] === "string") ? null : Number(r[p])])
         ),
       }));
 
@@ -108,6 +123,7 @@ function buildAmcMerged() {
         origCodes: new Set([row.code]),
         desc:     canonDesc,
         type:     row.type,
+        person:   row.person || "",
         amcs:     Object.fromEntries(amcPlants.map(p => [p, null])),
         isMerged: false,
       });
@@ -159,10 +175,34 @@ function amcGini(row) {
   return num / (2 * n * n * mean);
 }
 
-function getAmcFilteredRows(typeFilter) {
+function getAmcFilteredRows(typeFilter, personFilter) {
   if (!amcMerged.length) return [];
-  if (!typeFilter) return amcMerged;
-  return amcMerged.filter(r => r.type === typeFilter);
+  let rows = amcMerged;
+  if (typeFilter)   rows = rows.filter(r => r.type === typeFilter);
+  if (personFilter) rows = rows.filter(r => r.person === personFilter.toUpperCase());
+  return rows;
+}
+
+/** Build sorted list of unique persons from amcMerged */
+function getAmcPersons() {
+  const set = new Set(amcMerged.map(r => r.person).filter(Boolean));
+  return [...set].sort();
+}
+
+/** Populate a <select> element with person options (idempotent) */
+function populatePersonSelect(selectId) {
+  const el = document.getElementById(selectId);
+  if (!el) return;
+  // Keep current value if possible
+  const current = el.value;
+  // Remove old person options (keep first blank option)
+  while (el.options.length > 1) el.remove(1);
+  for (const p of getAmcPersons()) {
+    const opt = document.createElement("option");
+    opt.value = p; opt.text = "👤 " + p;
+    el.appendChild(opt);
+  }
+  if (current) el.value = current;
 }
 
 function amcKpiCard(label, value, sub, color) {
@@ -181,10 +221,13 @@ async function renderAmcDistribution() {
 
   const typeEl   = document.getElementById("amc-dist-type");
   const searchEl = document.getElementById("amc-dist-search");
+  const personEl = document.getElementById("amc-dist-person");
   const typeVal  = typeEl   ? typeEl.value.trim()   : "";
   const searchQ  = searchEl ? searchEl.value.trim().toLowerCase() : "";
+  const personVal = personEl ? personEl.value.trim() : "";
+  populatePersonSelect("amc-dist-person");
 
-  let rows = getAmcFilteredRows(typeVal);
+  let rows = getAmcFilteredRows(typeVal, personVal);
   if (searchQ) rows = rows.filter(r =>
     r.code.toLowerCase().includes(searchQ) || r.desc.toLowerCase().includes(searchQ)
   );
@@ -299,12 +342,15 @@ async function renderAmcCoverage() {
   await waitForPlotly();
   if (!amcMerged.length) return;
 
-  const typeEl  = document.getElementById("amc-cov-type");
-  const plantEl = document.getElementById("amc-cov-plant");
-  const viewEl  = document.getElementById("amc-cov-view");
-  const typeVal  = typeEl  ? typeEl.value.trim()  : "";
-  const plantVal = plantEl ? plantEl.value.trim() : "";
-  const viewMode = viewEl  ? viewEl.value         : "all";
+  const typeEl   = document.getElementById("amc-cov-type");
+  const plantEl  = document.getElementById("amc-cov-plant");
+  const viewEl   = document.getElementById("amc-cov-view");
+  const personEl = document.getElementById("amc-cov-person");
+  const typeVal   = typeEl   ? typeEl.value.trim()  : "";
+  const plantVal  = plantEl  ? plantEl.value.trim() : "";
+  const viewMode  = viewEl   ? viewEl.value         : "all";
+  const personVal = personEl ? personEl.value.trim() : "";
+  populatePersonSelect("amc-cov-person");
 
   // Populate plant dropdown once
   if (plantEl && plantEl.options.length <= 1) {
@@ -315,7 +361,7 @@ async function renderAmcCoverage() {
     });
   }
 
-  let rows = getAmcFilteredRows(typeVal);
+  let rows = getAmcFilteredRows(typeVal, personVal);
 
   // KPIs
   const totalItems   = rows.length;
@@ -418,10 +464,13 @@ async function renderAmcImbalance() {
 
   const threshEl = document.getElementById("amc-imb-threshold");
   const typeEl   = document.getElementById("amc-imb-type");
+  const personEl = document.getElementById("amc-imb-person");
   const threshold = threshEl ? Number(threshEl.value) : 10;
   const typeVal   = typeEl   ? typeEl.value.trim()    : "";
+  const personVal = personEl ? personEl.value.trim()  : "";
+  populatePersonSelect("amc-imb-person");
 
-  let rows = getAmcFilteredRows(typeVal);
+  let rows = getAmcFilteredRows(typeVal, personVal);
 
   // Compute imbalance metrics per row
   const scored = rows.map(r => {
@@ -537,10 +586,13 @@ async function renderAmcRedistribution() {
 
   const sourceEl = document.getElementById("amc-redist-source");
   const typeEl   = document.getElementById("amc-redist-type");
+  const personEl = document.getElementById("amc-redist-person");
   const sourceMode = sourceEl ? sourceEl.value : "any";
   const typeVal    = typeEl   ? typeEl.value.trim() : "";
+  const personVal  = personEl ? personEl.value.trim() : "";
+  populatePersonSelect("amc-redist-person");
 
-  let rows = getAmcFilteredRows(typeVal);
+  let rows = getAmcFilteredRows(typeVal, personVal);
 
   // Build redistribution suggestions:
   // For each item, find plants with excess (> 2× average) and plants with zero.
@@ -705,6 +757,7 @@ async function renderAmcRedistribution() {
       "amc-dist-clear":   () => {
         const s = document.getElementById("amc-dist-search"); if (s) s.value="";
         const t = document.getElementById("amc-dist-type");   if (t) t.value="";
+        const p = document.getElementById("amc-dist-person"); if (p) p.value="";
         renderAmcDistribution();
       },
       "amc-cov-apply":    renderAmcCoverage,
